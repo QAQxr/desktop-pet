@@ -21,3 +21,13 @@ platform:
   # null -> auto-detect. "xcb" forces X11/XWayland, "wayland" forces native.
   override: null
   prefer_x11_for_positioning: true
+
+animation:
+  enabled: true
+  fps: 30
+  idle:
+    enabled: true
+    duration: 3.0         # seconds per breathing cycle
+    float_amplitude: 2.0  # vertical bob in pixels (peak)
+    scale_amplitude: 0.01 # +/- fraction of scale (breathing)
+    rotation_amplitude: 0.0  # degrees; 0 disables tilt

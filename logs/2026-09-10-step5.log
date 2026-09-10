@@ -1,0 +1,102 @@
+# Desktop Pet 开发日志 — Step 5：程序化 Idle 动画
+
+日期：2026-09-10
+项目：~/opencode/projects/desktop-pet/
+执行者：opencode (deepseek-flash)
+授权：用户要求「现在进入 Desktop Pet Step 5」。
+
+标签：[code=项目代码] [cfg=配置] [test=测试] [run=运行] [gen=生成资源]
+
+---
+
+## 0. 依赖
+
+**No new dependency installed.**
+仅使用已有 PySide6 / numpy / Pillow / PyYAML。conda 环境与 `requirements.txt` 未改动。
+
+## 1. 新增文件 [code]
+
+- `src/animation/transform.py` — `AnimationTransform`（dx/dy/scale/rotation/alpha，冻结 dataclass）
+- `src/animation/clock.py` — `AnimationClock`，可暂停的单调时钟（纯 Python，无 Qt）
+- `src/animation/idle.py` — 纯函数 `idle_transform()` 与 `IdleAnimation`
+- `src/animation/controller.py` — `AnimationController`（QTimer/PQElapsedTimer 驱动，start/pause/resume/stop）
+- `tests/test_animation.py` — 新增 11 个动画测试
+
+## 2. 修改文件 [code/cfg]
+
+- `src/ui/desktop_window.py`
+  - 新增 `padding` 参数（动画不裁剪）
+  - 新增 `set_animation_transform()` / `animation_transform()`
+  - `paintEvent` 改为：世界锚点(底部中心) + 动画偏移/缩放/旋转/透明度合成
+  - **不移动窗口本身**（无 `window.move()` 参与动画）
+- `src/config/settings.py` — 新增 `IdleAnimationConfig` / `AnimationConfig`，`Config` 增加 `animation`
+- `src/main.py` — 装配动画控制器；新增 `--no-animation/--pause-at/--resume-at/--run-seconds/--screenshot-seq/--frame-count/--frame-interval`
+- `config/config.yaml` — 新增 `animation` 段
+- `.gitignore` — 忽略运行时日志 `logs/*-run.log`、测试截图 `logs/*.png`、`logs/step5-*/`
+- `README.md` — 新增 Step 5 功能、动画系统说明、更新限制与后续计划
+
+## 3. 配置变更 [cfg]
+
+```yaml
+animation:
+  enabled: true
+  fps: 30
+  idle:
+    enabled: true
+    duration: 3.0
+    float_amplitude: 2.0
+    scale_amplitude: 0.01
+    rotation_amplitude: 0.0
+```
+
+## 4. 测试 [test]
+
+- 命令：`conda run -n desktop-pet python -m unittest discover -s tests -v`
+- 结果：**16/16 通过**（原有 5 + 新增 11）
+- 覆盖：idle 数学关键点/周期性/alpha 恒定、时钟暂停冻结与恢复续时、控制器 start/pause/resume/stop、
+  配置加载与默认值、`render_padding`、**动画不写文件**、原始素材不受影响
+
+## 5. 运行结果 [run]
+
+### 5.1 离屏动画序列（证明动画生效）
+
+- 命令：`QT_QPA_PLATFORM=offscreen python src/main.py --screenshot-seq logs/step5-animation-check --frame-count 6 --frame-interval 0.5`
+- 产物：`logs/step5-animation-check/frame_00..05.png`（测试产物）
+- 分析：角色顶边 y 在 6→14px 间变化，内容高度 214→219px，帧间差异非零 → 浮动与呼吸缩放均生效
+
+### 5.2 暂停/恢复可视化（证明冻结）
+
+- 命令：`... --screenshot-seq logs/step5-pause-check --frame-count 8 --frame-interval 0.5 --pause-at 1.0 --resume-at 2.5`
+- 产物：`logs/step5-pause-check/frame_00..07.png`
+- 分析：frame 2→3、3→4 的像素差 **0.0000（完全冻结）**；恢复后 frame 5→6、6→7 差异恢复（17.5 / 13.3）
+
+### 5.3 真实 Wayland 运行 + CPU
+
+- 命令：`python src/main.py --run-seconds 8`
+- 环境：Wayland / GNOME，窗口 234×238
+- 结果：exit 0，无崩溃、无残留进程
+- 资源：平均 CPU ≈ 9.5–12.3%，RSS ≈ 89 MB
+
+## 6. 生成物 [gen]
+
+- 无新的正式素材；idle 动画全部在内存中完成，未生成任何 PNG。
+- 仅测试产物：`logs/step5-animation-check/`、`logs/step5-pause-check/`（已被 .gitignore 忽略）。
+
+## 7. 原始素材保护
+
+- `picture/original/{file,file.png,素材.png}` MD5 与 Step 4 完全一致，权限仍为 `r--r--r--`。
+- 未修改、未覆盖、未重命名。
+
+## 8. 回滚方式
+
+- 删除新增 4 个动画模块、`tests/test_animation.py`。
+- 还原 `src/ui/desktop_window.py`、`src/config/settings.py`、`src/main.py`、`config/config.yaml`、
+  `.gitignore`、`README.md` 至 Step 4 版本（`git revert` 对应提交即可）。
+- 删除 `logs/step5-*/` 测试产物。
+- 无需卸载依赖、无需改环境。
+
+## 9. 当前已知问题
+
+- Idle 是对单帧的变换，非真实逐帧动画；幅度轻微是有意为之。
+- 30 FPS 软件渲染下 CPU 约 10%，尚未做帧缓存优化。
+- 原生 Wayland 下窗口定位仍受限（见 README），本阶段未涉及移动。

@@ -89,11 +89,19 @@ desktop-pet/
 ├── src/
 │   ├── main.py            # 程序入口
 │   ├── config/            # 配置加载
-│   ├── animation/         # 资源发现、抠图、动画（后续）
+│   │   └── settings.py
+│   ├── animation/         # 动画层（独立于窗口）
+│   │   ├── asset_loader.py   # 素材发现
+│   │   ├── background.py     # 抠图
+│   │   ├── transform.py      # AnimationTransform（视觉偏移）
+│   │   ├── clock.py          # 可暂停时钟（纯 Python，可测试）
+│   │   ├── idle.py           # IdleAnimation + 纯函数 idle_transform
+│   │   └── controller.py     # AnimationController（Qt 定时驱动）
 │   ├── behavior/          # 状态机 / 自主行为（后续）
 │   ├── world/             # 桌面物件（后续）
 │   ├── pet/               # 桌宠核心（后续）
-│   └── ui/                # 透明窗口
+│   └── ui/                # 透明窗口（只负责显示）
+│       └── desktop_window.py
 ├── config/
 │   └── config.yaml
 ├── tools/
@@ -144,7 +152,9 @@ desktop-pet/
 
 ---
 
-## 当前已实现功能（第一阶段 · Step 4）
+## 当前已实现功能
+
+### Step 4
 
 - [x] 无边框、背景透明的桌面窗口（`Qt.FramelessWindowHint` + `WA_TranslucentBackground`）
 - [x] 从 `picture/` 自动发现并加载角色素材
@@ -153,13 +163,83 @@ desktop-pet/
 - [x] 配置文件化（`walk_speed` / `idle_time` / `window_scale` / `behavior_enabled` …）
 - [x] 自动化测试与自检截图
 
-尚未实现（后续 Step）：程序化 idle 动画、移动、点击/拖动、状态机、桌面物件、自主行为。
+### Step 5（程序化 Idle 动画）
+
+- [x] 独立动画层：`transform → clock → idle → controller`，与窗口/UI 解耦
+- [x] 用 `sin()` 驱动轻微上下浮动 + 轻微缩放（呼吸感），alpha 不变
+- [x] 基于 `QTimer`（默认 30 FPS）驱动，不阻塞 GUI 主线程；不使用 `sleep` 循环
+- [x] 支持 `start() / pause() / resume() / stop()`，暂停时画面冻结在当前位置
+- [x] 动画参数全部配置化（周期、浮动幅度、缩放幅度、旋转、FPS、开关）
+- [x] **世界位置与动画偏移分离**：动画只改变绘制偏移，不移动窗口
+- [x] 动画在内存中完成，不生成任何新 PNG
+- [x] 自动化测试覆盖动画数学、时钟暂停/恢复、控制器状态、配置加载
+
+尚未实现（后续 Step）：移动、点击/拖动、状态机、桌面物件、自主行为。
+
+---
+
+## 动画系统（Step 5）
+
+### 架构分层
+
+```text
+World Position   （窗口真实位置，ui/desktop_window.py）
+      +
+Animation Offset （animation/transform.py，动画产生的视觉偏移）
+      =
+Render Position  （最终绘制位置，paintEvent 中合成）
+```
+
+`DesktopWindow` 拥有窗口真实坐标，只通过 `set_animation_transform()` 接收偏移并在
+`paintEvent` 中合成，**绝不通过 `window.move()` 实现呼吸动画**，为 Step 6 的移动留出空间。
+
+### Idle 动画
+
+- 纯函数 `idle_transform(t, ...)` 把「时间 → 偏移」抽象出来，便于单元测试。
+- `IdleAnimation.sample(t)` 返回 `AnimationTransform(dy, scale, rotation, alpha)`。
+- 默认参数：`duration=3.0s`、`float_amplitude=2.0px`、`scale_amplitude=0.01`、`rotation=0.0°`。
+- 窗口四周预留 padding（由 `render_padding()` 计算），避免浮动/缩放被裁剪。
+
+### 控制接口
+
+```text
+controller.start()    # 开始（t=0 立即渲染一帧）
+controller.pause()    # 暂停，画面停止在当前状态
+controller.resume()   # 从暂停处继续，不跳变
+controller.stop()     # 停止并回到基础位置
+```
+
+### 配置
+
+```yaml
+animation:
+  enabled: true
+  fps: 30
+  idle:
+    enabled: true
+    duration: 3.0
+    float_amplitude: 2.0
+    scale_amplitude: 0.01
+    rotation_amplitude: 0.0
+```
+
+命令行开关（便于测试，未来可被右键菜单/行为系统复用）：
+
+```bash
+./run.sh --no-animation                 # 禁用动画
+./run.sh --pause-at 1.0 --resume-at 2.5 # 1s 暂停、2.5s 恢复
+./run.sh --run-seconds 8                # 运行 8 秒后自动退出
+./run.sh --screenshot-seq logs/step5-animation-check --frame-count 6 --frame-interval 0.5
+```
 
 ---
 
 ## 已知限制
 
 - 当前只有**单帧静态立绘**，尚无正式动画帧；动作表现为占位。
+- Idle 动画是**对单帧做程序化变换**（浮动/缩放），不是真实逐帧动画，幅度刻意很轻微。
+- `rotation_amplitude` 默认为 0（不倾斜），因为单帧旋转在边缘容易显得不自然。
+- 实测参考：30 FPS 下平均 CPU 约 10%、RSS 约 89 MB（软件渲染，随硬件与合成器而异）。
 - 设计稿中的动作/物件为参考图，未切分，暂不能直接作为素材。
 - `file` / `file.png` 白底抠图对浅色毛发边缘可能出现轻微残留，属占位级质量。
 - 首次运行前需先生成派生素材：`conda run -n desktop-pet python tools/generate_assets.py`。
@@ -200,7 +280,7 @@ desktop-pet/
 ## 后续计划
 
 ```text
-Step 5  程序化 idle 动画（呼吸 / 轻微浮动）
+Step 5  程序化 idle 动画（呼吸 / 轻微浮动）   ✅ 已完成
 Step 6  基础移动（速度、目标点、左右方向）
 Step 7  鼠标点击 / 拖动
 Step 8  状态机（IDLE / WALK / SIT …）

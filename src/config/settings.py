@@ -32,6 +32,22 @@ class PlatformConfig:
 
 
 @dataclass
+class IdleAnimationConfig:
+    enabled: bool = True
+    duration: float = 3.0
+    float_amplitude: float = 2.0
+    scale_amplitude: float = 0.01
+    rotation_amplitude: float = 0.0
+
+
+@dataclass
+class AnimationConfig:
+    enabled: bool = True
+    fps: int = 30
+    idle: IdleAnimationConfig = field(default_factory=IdleAnimationConfig)
+
+
+@dataclass
 class Config:
     walk_speed: float = 80.0
     idle_time: float = 5.0
@@ -40,6 +56,7 @@ class Config:
     window: WindowConfig = field(default_factory=WindowConfig)
     assets: AssetConfig = field(default_factory=AssetConfig)
     platform: PlatformConfig = field(default_factory=PlatformConfig)
+    animation: AnimationConfig = field(default_factory=AnimationConfig)
 
     @property
     def project_root(self) -> Path:
@@ -70,6 +87,16 @@ class Config:
         window = WindowConfig(**_pick(raw.get("window"), WindowConfig))
         assets = AssetConfig(**_pick(raw.get("assets"), AssetConfig))
         platform = PlatformConfig(**_pick(raw.get("platform"), PlatformConfig))
+
+        animation_raw = raw.get("animation")
+        if not isinstance(animation_raw, dict):
+            animation_raw = {}
+        idle = IdleAnimationConfig(**_pick(animation_raw.get("idle"), IdleAnimationConfig))
+        animation = AnimationConfig(
+            enabled=bool(animation_raw.get("enabled", True)),
+            fps=int(animation_raw.get("fps", 30)),
+            idle=idle,
+        )
         return cls(
             walk_speed=float(raw.get("walk_speed", cls.walk_speed)),
             idle_time=float(raw.get("idle_time", cls.idle_time)),
@@ -78,6 +105,7 @@ class Config:
             window=window,
             assets=assets,
             platform=platform,
+            animation=animation,
         )
 
 

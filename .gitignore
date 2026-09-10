@@ -5,5 +5,11 @@ __pycache__/
 .env
 *.swp
 .DS_Store
+
+# runtime logs (development/audit logs in logs/*.log stay tracked)
 logs/desktop-pet-*.log
+logs/*-run.log
+
+# test artifacts: screenshots and generated frame sequences
 logs/*.png
+logs/step5-*/
