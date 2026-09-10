@@ -48,6 +48,14 @@ class AnimationConfig:
 
 
 @dataclass
+class MovementConfig:
+    enabled: bool = True
+    speed: float = 120.0
+    direction: str = "right"
+    fps: int = 60
+
+
+@dataclass
 class Config:
     walk_speed: float = 80.0
     idle_time: float = 5.0
@@ -57,6 +65,7 @@ class Config:
     assets: AssetConfig = field(default_factory=AssetConfig)
     platform: PlatformConfig = field(default_factory=PlatformConfig)
     animation: AnimationConfig = field(default_factory=AnimationConfig)
+    movement: MovementConfig = field(default_factory=MovementConfig)
 
     @property
     def project_root(self) -> Path:
@@ -97,6 +106,16 @@ class Config:
             fps=int(animation_raw.get("fps", 30)),
             idle=idle,
         )
+
+        movement_raw = raw.get("movement")
+        if not isinstance(movement_raw, dict):
+            movement_raw = {}
+        movement = MovementConfig(
+            enabled=bool(movement_raw.get("enabled", True)),
+            speed=float(movement_raw.get("speed", raw.get("walk_speed", MovementConfig.speed))),
+            direction=str(movement_raw.get("direction", MovementConfig.direction)),
+            fps=int(movement_raw.get("fps", MovementConfig.fps)),
+        )
         return cls(
             walk_speed=float(raw.get("walk_speed", cls.walk_speed)),
             idle_time=float(raw.get("idle_time", cls.idle_time)),
@@ -106,6 +125,7 @@ class Config:
             assets=assets,
             platform=platform,
             animation=animation,
+            movement=movement,
         )
 
 

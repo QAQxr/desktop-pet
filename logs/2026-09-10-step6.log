@@ -1,0 +1,93 @@
+# Desktop Pet 开发日志 — Step 6：基础桌面移动
+
+日期：2026-09-10
+项目：~/opencode/projects/desktop-pet/
+执行者：opencode (deepseek-flash)
+授权：用户要求「Step 6 — Basic Desktop Movement」；并授权安装 conda 包 `xcb-util-cursor`。
+
+标签：[code] [cfg] [test] [run] [env] [gen]
+
+---
+
+## 0. 依赖 / 环境 [env]
+
+- 新增 conda 包：**`xcb-util-cursor 0.1.6`（conda-forge）**，仅装入 env `desktop-pet`，未修改系统。
+  - 命令：`conda install -n desktop-pet -c conda-forge xcb-util-cursor -y`
+  - 原因：Qt≥6.5 的 `xcb`(XWayland) 平台插件需要 `libxcb-cursor.so.0`；系统未安装，改为装入独立 conda 环境。
+  - 产物：`$CONDA_PREFIX/lib/libxcb-cursor.so.0`（约 27 KB，含静态库共约 60 KB）
+  - 回滚：`conda remove -n desktop-pet xcb-util-cursor`
+- pip 依赖：**No new pip dependency installed.**（requirements.txt 未变）
+
+## 1. 新增文件 [code]
+
+- `src/movement/__init__.py`
+- `src/movement/position.py` — `WorldPosition`
+- `src/movement/bounds.py` — `MovementBounds`（clamp / from_screen）
+- `src/movement/movement.py` — `Direction` / `MovementState` / `MovementModel`（纯逻辑）
+- `src/movement/controller.py` — `MovementController`（QTimer + QElapsedTimer，delta time）
+- `tests/test_movement.py` — 新增 21 个测试
+
+## 2. 修改文件 [code/cfg]
+
+- `src/config/settings.py` — 新增 `MovementConfig`（enabled/speed/direction/fps）
+- `src/main.py` — 接入移动层；新增 `--move/--movement-test/--no-movement/--speed/--start-x/--start-y`；
+  `--pause-at/--resume-at` 同时暂停移动与动画；平台检测与 Wayland 警告；移动日志（initial/final/elapsed/distance）
+- `config/config.yaml` — 新增 `movement` 段；`walk_speed` 标注为回退别名
+- `run.sh` — 自动把 `$CONDA_PREFIX/lib` 注入 `LD_LIBRARY_PATH`（使 `xcb` 开箱可用）
+- `.gitignore` — `logs/step5-*/` → `logs/step*-*/`
+- `README.md` — Step 6 文档、移动系统、Wayland/xcb 说明、限制、依赖
+
+## 3. 配置变更 [cfg]
+
+```yaml
+movement:
+  enabled: true
+  speed: 120.0
+  direction: right
+  fps: 60
+```
+
+## 4. 删除文件
+
+None
+
+## 5. 测试 [test]
+
+- 命令：`conda run -n desktop-pet python -m unittest discover -s tests`
+- 结果：**37/37 通过**（Step4/5 的 16 + 新增 21）
+- 覆盖：WorldPosition、边界 clamp（上下左右）、from_screen、delta-time 距离、帧率无关、
+  四方向、clamp 并停止、pause 冻结、resume 续动、负速度拒绝、
+  **移动改世界坐标 / 动画只改 transform**、空闲动画不改世界坐标、配置加载与回退、控制器状态、原始素材 MD5
+
+## 6. 集成测试 [run]
+
+| 场景 | 命令要点 | 结果 |
+|---|---|---|
+| 离屏移动+动画 | `QT_QPA_PLATFORM=offscreen … --move right --start-x 100 --start-y 200 --speed 120 --screenshot-seq logs/step6-movement-check --frame-count 6 --frame-interval 0.5` | world 100→406（2.57s, 306px≈119px/s）；同帧 `anim_dy` 同时变化，证明两系统共存 |
+| 边界 | `… --move right --start-x 520 --speed 200 --run-seconds 2` | clamp 到 566，state=idle（停止） |
+| 暂停/恢复 | `… --pause-at 1.0 --resume-at 2.0 --run-seconds 3` | 暂停 world=(224.44,200)，暂停 1s 后恢复仍为同值（无跳变） |
+| 原生 Wayland | `python src/main.py --move right --run-seconds 3` | 检测 `platform=wayland`，`positioning_supported=False`，打印警告；移动逻辑运行但屏幕不可见 |
+| XWayland | `QT_QPA_PLATFORM=xcb ./run.sh --move right --start-x 100 --start-y 200 --run-seconds 3` | `platform=xcb`，真实移动 100→467（3.07s, 367px≈119.5px/s） |
+
+## 7. 生成物 [gen]
+
+- 测试截图：`logs/step6-movement-check/frame_00..05.png`（已被 .gitignore 忽略）
+- 未生成任何正式素材；未修改原始素材。
+
+## 8. 原始素材保护
+
+- `picture/original/{file,file.png,素材.png}` MD5 与之前完全一致（测试中亦加入 MD5 断言），权限仍 `r--r--r--`。
+
+## 9. 回滚方式
+
+- 删除 `src/movement/`、`tests/test_movement.py`。
+- 还原 `src/main.py`、`src/config/settings.py`、`config/config.yaml`、`run.sh`、`.gitignore`、`README.md`（或 `git revert`）。
+- 卸载 conda 包：`conda remove -n desktop-pet xcb-util-cursor`。
+- 删除 `logs/step6-*/`。
+
+## 10. 已知问题
+
+- 原生 Wayland 无法移动窗口（合成器限制），需 `xcb`。
+- 多显示器未实现，仅用当前屏幕。
+- WALK 无真实行走帧/朝向翻转，仍是占位 Idle 动画。
+- 无碰撞/寻路/反弹。

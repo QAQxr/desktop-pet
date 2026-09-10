@@ -12,4 +12,4 @@ logs/*-run.log
 
 # test artifacts: screenshots and generated frame sequences
 logs/*.png
-logs/step5-*/
+logs/step*-*/

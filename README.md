@@ -41,6 +41,14 @@ conda run -n desktop-pet python -m pip install -r requirements.txt
 
 依赖精确版本见 `requirements.txt` 与 `logs/pip-freeze.txt`。
 
+XWayland（`xcb`）后端还需要一个 conda 包（非 pip）：
+
+```bash
+conda install -n desktop-pet -c conda-forge xcb-util-cursor -y
+```
+
+它提供 `libxcb-cursor.so.0`，仅装入 conda 环境，不修改系统。
+
 ---
 
 ## 启动方式
@@ -97,6 +105,11 @@ desktop-pet/
 │   │   ├── clock.py          # 可暂停时钟（纯 Python，可测试）
 │   │   ├── idle.py           # IdleAnimation + 纯函数 idle_transform
 │   │   └── controller.py     # AnimationController（Qt 定时驱动）
+│   ├── movement/          # 移动层（世界坐标，独立于绘制）
+│   │   ├── position.py       # WorldPosition
+│   │   ├── bounds.py         # MovementBounds（屏幕边界 + clamp）
+│   │   ├── movement.py       # Direction / MovementState / MovementModel
+│   │   └── controller.py     # MovementController（Qt 定时驱动）
 │   ├── behavior/          # 状态机 / 自主行为（后续）
 │   ├── world/             # 桌面物件（后续）
 │   ├── pet/               # 桌宠核心（后续）
@@ -174,7 +187,19 @@ desktop-pet/
 - [x] 动画在内存中完成，不生成任何新 PNG
 - [x] 自动化测试覆盖动画数学、时钟暂停/恢复、控制器状态、配置加载
 
-尚未实现（后续 Step）：移动、点击/拖动、状态机、桌面物件、自主行为。
+### Step 6（基础桌面移动）
+
+- [x] 独立移动层 `movement/`：`WorldPosition / MovementBounds / MovementModel / MovementController`
+- [x] 基于 `delta_time` 的运动：`position += velocity * delta_time`，帧率无关
+- [x] 四方向移动（left / right / up / down），速度单位 pixels/second
+- [x] 屏幕边界：从 Qt 屏幕几何计算，越界 `clamp` 并停止（不反弹、不寻路）
+- [x] 状态：`IDLE / WALKING / PAUSED`
+- [x] 移动与 Idle 动画**同时工作且互不覆盖**（移动改窗口世界坐标，动画只改绘制偏移）
+- [x] 暂停/恢复同时作用于移动与动画，无位置跳变
+- [x] 移动逻辑不依赖 `QWidget` 绘制；窗口只接收 `window.move()` 指令
+- [ ] **注意：当前 “WALK” 只是移动状态**，并没有真实的行走逐帧动画，移动时仍播放 Idle 占位动画
+
+尚未实现（后续 Step）：点击/拖动、状态机、桌面物件、自主行为。
 
 ---
 
@@ -234,11 +259,89 @@ animation:
 
 ---
 
+## 移动系统（Step 6）
+
+### 架构分层
+
+```text
+World Position     （movement/position.py，桌宠窗口真实坐标）
+      +
+Animation Offset   （animation/transform.py，动画视觉偏移）
+      =
+Render Position    （ui/desktop_window.py 的 paintEvent 合成）
+```
+
+职责严格分离：
+
+```text
+Movement   -> 改变窗口世界坐标（window.move）
+Animation  -> 只改变窗口内部角色的绘制偏移
+```
+
+`MovementModel` 是纯逻辑（不含 Qt / 不绘制）；`MovementController` 仅用 `QElapsedTimer` + `QTimer`
+计算并发出新坐标，由 `main.py` 把它接到 `window.move()`。因此两个系统不会互相争抢窗口坐标。
+
+### 运动模型
+
+```text
+position += velocity * delta_time
+velocity = direction_unit * speed      # speed: pixels/second
+```
+
+- 帧率无关：30 / 60 / 144 FPS 下速度一致。
+- 无加速度、摩擦、碰撞、寻路（Step 6 范围之外）。
+
+### 边界行为
+
+- 从 Qt 当前屏幕 `availableGeometry()` 与窗口尺寸计算 `MovementBounds`（不使用固定 1920×1080）。
+- 到达边界：**clamp 到边界并停止移动**（不反弹、不自动转身）。
+
+### 配置
+
+```yaml
+movement:
+  enabled: true
+  speed: 120.0     # pixels per second
+  direction: right # left | right | up | down（--movement-test 使用）
+  fps: 60
+```
+
+> 顶层 `walk_speed` 为旧字段；当 `movement.speed` 未设置时作为回退值。
+
+### 运行 / 验证移动
+
+```bash
+# 向右移动（真实 XWayland 窗口移动；GNOME Wayland 需 xcb）
+QT_QPA_PLATFORM=xcb ./run.sh --move right --start-x 100 --start-y 200 --run-seconds 3
+
+# 便捷测试：按 config 的方向移动
+QT_QPA_PLATFORM=xcb ./run.sh --movement-test --run-seconds 4
+
+# 禁用移动
+./run.sh --no-movement
+
+# 与动画一起截帧，日志会同时打印 world=(x,y) 与 anim_dy
+./run.sh --move right --screenshot-seq logs/step6-movement-check --frame-count 6 --frame-interval 0.5
+```
+
+运行日志会输出：`initial / final / elapsed / distance / state`，用于核验速度与边界。
+
+### 暂停 / 恢复
+
+`--pause-at` / `--resume-at` 现在同时暂停/恢复移动与动画；暂停期间世界坐标冻结，
+恢复后从暂停点继续，不会跳变。
+
+---
+
 ## 已知限制
 
 - 当前只有**单帧静态立绘**，尚无正式动画帧；动作表现为占位。
+- **WALK 目前只是“移动状态”**：移动时仍播放 Idle 占位动画，没有真实行走逐帧动画，也没有左右翻转朝向。
 - Idle 动画是**对单帧做程序化变换**（浮动/缩放），不是真实逐帧动画，幅度刻意很轻微。
 - `rotation_amplitude` 默认为 0（不倾斜），因为单帧旋转在边缘容易显得不自然。
+- 移动**不做碰撞、寻路、反弹、自动转身**；到达边界即 clamp 并停止。
+- 多显示器：仅使用**当前窗口所在屏幕**的 `availableGeometry`，不实现跨屏移动（known limitation）。
+- **原生 Wayland 下窗口移动不可见**，需 `QT_QPA_PLATFORM=xcb`（见上）。
 - 实测参考：30 FPS 下平均 CPU 约 10%、RSS 约 89 MB（软件渲染，随硬件与合成器而异）。
 - 设计稿中的动作/物件为参考图，未切分，暂不能直接作为素材。
 - `file` / `file.png` 白底抠图对浅色毛发边缘可能出现轻微残留，属占位级质量。
@@ -251,15 +354,23 @@ animation:
 项目采用**自动兼容**策略，不强制绑定某一后端：
 
 - 未设置 `QT_QPA_PLATFORM` 时，Qt 按当前会话自动选择后端（Wayland 会话 → `wayland`，X11 会话 → `xcb`）。
-- **原生 Wayland 的限制**：合成器不允许应用任意摆放窗口位置，`move()` 可能被忽略，且无法保证“置底/桌面层级”。因此后续的**自由移动定位**功能在原生 Wayland 下可能受限。
-- **XWayland 兼容模式**：当需要精确控制桌宠坐标时，可强制 `xcb`：
+- **原生 Wayland 的限制**：合成器**不允许应用任意摆放窗口位置**，`window.move()` 会被忽略。
+  因此 Step 6 的**真实桌面移动在原生 Wayland 下不可见**（程序会检测到并打印警告，移动逻辑本身仍正确运行）。
+- **XWayland（`xcb`）兼容模式**：需要精确控制桌宠坐标时使用。已验证真实窗口移动有效：
 
   ```bash
-  QT_QPA_PLATFORM=xcb ./run.sh
+  QT_QPA_PLATFORM=xcb ./run.sh --move right --start-x 100 --start-y 200 --run-seconds 3
   ```
 
-  也可在 `config/config.yaml` 中设置 `platform.override: xcb`，或使用环境变量 `DESKTOP_PET_QT_PLATFORM=xcb`。
-- 本项目**不修改系统环境**来强制切换后端。
+  也可在 `config/config.yaml` 设置 `platform.override: xcb`，或环境变量 `DESKTOP_PET_QT_PLATFORM=xcb`。
+- **依赖说明**：Qt ≥ 6.5 的 `xcb` 插件需要 `libxcb-cursor.so.0`。本项目**不修改系统**，而是安装到 conda 环境：
+
+  ```bash
+  conda install -n desktop-pet -c conda-forge xcb-util-cursor -y
+  ```
+
+  `run.sh` 会自动把 `$CONDA_PREFIX/lib` 注入 `LD_LIBRARY_PATH`，因此无需改系统即可使用 `xcb`。
+  （若直接运行 `python src/main.py` 而非 `./run.sh`，需自行 `export LD_LIBRARY_PATH=$CONDA_PREFIX/lib`。）
 
 透明度与无边框在 Wayland / X11 下均可用；差异主要在窗口定位与层级控制。
 
@@ -281,7 +392,7 @@ animation:
 
 ```text
 Step 5  程序化 idle 动画（呼吸 / 轻微浮动）   ✅ 已完成
-Step 6  基础移动（速度、目标点、左右方向）
+Step 6  基础移动（速度、目标点、左右方向）    ✅ 已完成
 Step 7  鼠标点击 / 拖动
 Step 8  状态机（IDLE / WALK / SIT …）
 Step 9  桌面物件（Chair 等）

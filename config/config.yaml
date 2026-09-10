@@ -1,7 +1,7 @@
 # Desktop Pet configuration
 # All tunable runtime parameters live here instead of being hard-coded.
 
-walk_speed: 80.0          # pixels per second
+walk_speed: 80.0          # legacy alias; movement.speed is authoritative (Step 6)
 idle_time: 5.0            # seconds spent idling on average
 window_scale: 1.0         # overall UI scale
 behavior_enabled: true    # master switch for the rule-based behaviour engine
@@ -31,3 +31,9 @@ animation:
     float_amplitude: 2.0  # vertical bob in pixels (peak)
     scale_amplitude: 0.01 # +/- fraction of scale (breathing)
     rotation_amplitude: 0.0  # degrees; 0 disables tilt
+
+movement:
+  enabled: true
+  speed: 120.0            # pixels per second
+  direction: right        # left | right | up | down (used by --movement-test)
+  fps: 60                 # movement tick rate

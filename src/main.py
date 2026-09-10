@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import os
 import sys
 from datetime import datetime
@@ -12,13 +13,17 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from PySide6.QtCore import QTimer  # noqa: E402
+from PySide6.QtCore import QElapsedTimer, QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from animation.asset_loader import AssetDiscovery  # noqa: E402
 from animation.controller import AnimationController  # noqa: E402
 from animation.idle import IdleAnimation  # noqa: E402
 from config.settings import Config  # noqa: E402
+from movement.bounds import MovementBounds  # noqa: E402
+from movement.controller import MovementController  # noqa: E402
+from movement.movement import Direction, MovementModel  # noqa: E402
+from movement.position import WorldPosition  # noqa: E402
 from ui.desktop_window import DesktopWindow  # noqa: E402
 
 
@@ -37,8 +42,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-interval", type=float, default=0.5, help="seconds between sequence frames")
     parser.add_argument("--run-seconds", type=float, default=None, help="auto-quit after N seconds")
     parser.add_argument("--no-animation", action="store_true", help="disable animation for this run")
-    parser.add_argument("--pause-at", type=float, default=None, help="pause animation N seconds after start")
-    parser.add_argument("--resume-at", type=float, default=None, help="resume animation N seconds after start")
+    parser.add_argument("--pause-at", type=float, default=None, help="pause movement+animation N seconds after start")
+    parser.add_argument("--resume-at", type=float, default=None, help="resume movement+animation N seconds after start")
+
+    parser.add_argument(
+        "--move",
+        choices=["left", "right", "up", "down"],
+        default=None,
+        help="start walking in this direction",
+    )
+    parser.add_argument(
+        "--movement-test",
+        action="store_true",
+        help="convenience: walk in config direction (default right) for the run",
+    )
+    parser.add_argument("--no-movement", action="store_true", help="disable movement for this run")
+    parser.add_argument("--speed", type=float, default=None, help="override movement speed (pixels/second)")
+    parser.add_argument("--start-x", type=int, default=None, help="override initial window x")
+    parser.add_argument("--start-y", type=int, default=None, help="override initial window y")
     return parser.parse_args()
 
 
@@ -97,24 +118,46 @@ def build_animation(config: Config, render_height: int, logger: logging.Logger):
     return animation, padding
 
 
+def resolve_direction(args: argparse.Namespace, config: Config):
+    if args.move:
+        return Direction.from_name(args.move)
+    if args.movement_test:
+        return Direction.from_name(config.movement.direction)
+    return None
+
+
 def main() -> int:
     args = parse_args()
     logger = setup_logging()
     config = Config.load(args.config)
     if args.no_animation:
         config.animation.enabled = False
+    if args.start_x is not None:
+        config.window.start_x = args.start_x
+    if args.start_y is not None:
+        config.window.start_y = args.start_y
     logger.info(
-        "config loaded: walk_speed=%s idle_time=%s window_scale=%s behavior_enabled=%s",
-        config.walk_speed,
-        config.idle_time,
+        "config loaded: window_scale=%s behavior_enabled=%s movement.speed=%s movement.enabled=%s",
         config.window_scale,
         config.behavior_enabled,
+        config.movement.speed,
+        config.movement.enabled,
     )
     describe_environment(logger)
     resolve_platform(config, logger)
 
     app = QApplication(sys.argv[:1])
     app.setApplicationName("Desktop Pet")
+
+    platform_name = app.platformName()
+    positioning_supported = platform_name != "wayland"
+    logger.info("Qt platform plugin: %s (positioning_supported=%s)", platform_name, positioning_supported)
+    if not positioning_supported:
+        logger.warning(
+            "native Wayland detected: the compositor ignores window.move(); "
+            "desktop movement will not be visible on screen. "
+            "Use QT_QPA_PLATFORM=xcb (XWayland) for real movement."
+        )
 
     discovery = AssetDiscovery(
         generated_root=config.generated_root_path,
@@ -129,6 +172,7 @@ def main() -> int:
 
     window = DesktopWindow(config, frame, padding=padding)
     window.show()
+    app.processEvents()
     logger.info(
         "window shown: size=%sx%s pos=(%s,%s)",
         window.width(),
@@ -137,26 +181,109 @@ def main() -> int:
         window.y(),
     )
 
-    controller = None
+    animation_controller = None
     if animation is not None:
-        controller = AnimationController(animation, fps=config.animation.fps, parent=window)
-        controller.frame_changed.connect(window.set_animation_transform)
-        controller.start()
-        logger.info("animation started (fps=%.1f)", controller.fps)
+        animation_controller = AnimationController(animation, fps=config.animation.fps, parent=window)
+        animation_controller.frame_changed.connect(window.set_animation_transform)
+        animation_controller.start()
+        logger.info("animation started (fps=%.1f)", animation_controller.fps)
 
-        if args.pause_at is not None:
-            def do_pause() -> None:
-                controller.pause()
-                logger.info("animation paused at t=%.2fs", args.pause_at)
+    direction = resolve_direction(args, config)
+    movement_enabled = config.movement.enabled and not args.no_movement and direction is not None
+    speed = args.speed if args.speed is not None else config.movement.speed
+    movement_controller = None
+    movement_model = None
+    movement_start = WorldPosition(window.x(), window.y())
+    movement_started_at = QElapsedTimer()
 
-            QTimer.singleShot(int(args.pause_at * 1000), do_pause)
+    if movement_enabled:
+        screen = window.screen()
+        geo = screen.availableGeometry()
+        bounds = MovementBounds.from_screen(
+            geo.x(), geo.y(), geo.width(), geo.height(), window.width(), window.height()
+        )
+        movement_model = MovementModel(
+            position=movement_start,
+            speed=speed,
+            bounds=bounds,
+            direction=direction,
+        )
+        movement_controller = MovementController(
+            movement_model, fps=config.movement.fps, parent=window
+        )
 
-        if args.resume_at is not None:
-            def do_resume() -> None:
-                controller.resume()
-                logger.info("animation resumed at t=%.2fs", args.resume_at)
+        trace = {"count": 0, "last": movement_start}
 
-            QTimer.singleShot(int(args.resume_at * 1000), do_resume)
+        def on_position(position: WorldPosition) -> None:
+            window.move(int(round(position.x)), int(round(position.y)))
+            trace["count"] += 1
+            trace["last"] = position
+            if trace["count"] % max(1, config.movement.fps // 2) == 0:
+                logger.info(
+                    "movement: world=(%.0f, %.0f) state=%s window=(%s,%s)",
+                    position.x,
+                    position.y,
+                    movement_model.state.value,
+                    window.x(),
+                    window.y(),
+                )
+
+        movement_controller.position_changed.connect(on_position)
+        movement_controller.start()
+        movement_started_at.start()
+        logger.info(
+            "movement started: direction=%s speed=%s fps=%s initial=(%.0f, %.0f) bounds=x[%.0f..%.0f] y[%.0f..%.0f] window_size=%sx%s",
+            direction.name,
+            speed,
+            config.movement.fps,
+            movement_start.x,
+            movement_start.y,
+            bounds.min_x,
+            bounds.max_x,
+            bounds.min_y,
+            bounds.max_y,
+            window.width(),
+            window.height(),
+        )
+
+        def finalize_movement() -> None:
+            final = movement_model.position
+            elapsed = movement_started_at.elapsed() / 1000.0
+            distance = math.hypot(final.x - movement_start.x, final.y - movement_start.y)
+            logger.info(
+                "movement finished: initial=(%.0f, %.0f) final=(%.0f, %.0f) elapsed=%.2fs distance=%.0fpx state=%s",
+                movement_start.x,
+                movement_start.y,
+                final.x,
+                final.y,
+                elapsed,
+                distance,
+                movement_model.state.value,
+            )
+
+        app.aboutToQuit.connect(finalize_movement)
+
+    if args.pause_at is not None:
+        def do_pause() -> None:
+            if animation_controller is not None:
+                animation_controller.pause()
+            if movement_controller is not None:
+                movement_controller.pause()
+            world = movement_model.position.as_tuple() if movement_model is not None else None
+            logger.info("paused (animation+movement) at t=%.2fs world=%s", args.pause_at, world)
+
+        QTimer.singleShot(int(args.pause_at * 1000), do_pause)
+
+    if args.resume_at is not None:
+        def do_resume() -> None:
+            if animation_controller is not None:
+                animation_controller.resume()
+            if movement_controller is not None:
+                movement_controller.resume()
+            world = movement_model.position.as_tuple() if movement_model is not None else None
+            logger.info("resumed (animation+movement) at t=%.2fs world=%s", args.resume_at, world)
+
+        QTimer.singleShot(int(args.resume_at * 1000), do_resume)
 
     if args.screenshot:
         out = Path(args.screenshot)
@@ -178,7 +305,17 @@ def main() -> int:
         def capture_sequence(index: int) -> None:
             target = out_dir / f"frame_{index:02d}.png"
             window.grab().save(str(target))
-            logger.info("sequence frame %s/%s saved: %s", index + 1, total, target)
+            transform = window.animation_transform()
+            logger.info(
+                "sequence frame %s/%s saved: %s world=(%s,%s) anim_dy=%.2f anim_scale=%.3f",
+                index + 1,
+                total,
+                target,
+                window.x(),
+                window.y(),
+                transform.dy,
+                transform.scale,
+            )
             if index + 1 < total:
                 QTimer.singleShot(interval_ms, lambda: capture_sequence(index + 1))
             else:
