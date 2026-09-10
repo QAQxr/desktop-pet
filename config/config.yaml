@@ -1,0 +1,23 @@
+# Desktop Pet configuration
+# All tunable runtime parameters live here instead of being hard-coded.
+
+walk_speed: 80.0          # pixels per second
+idle_time: 5.0            # seconds spent idling on average
+window_scale: 1.0         # overall UI scale
+behavior_enabled: true    # master switch for the rule-based behaviour engine
+
+window:
+  pet_height: 220         # rendered character height in pixels
+  always_on_top: false    # keep the pet above other windows
+  start_x: null           # null -> place near bottom-right of the screen
+  start_y: null
+
+assets:
+  generated_root: picture/generated
+  original_root: picture/original
+  fallback: picture/original/file.png
+
+platform:
+  # null -> auto-detect. "xcb" forces X11/XWayland, "wayland" forces native.
+  override: null
+  prefer_x11_for_positioning: true

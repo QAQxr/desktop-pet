@@ -1,0 +1,19 @@
+{
+  "generated_at": "2026-09-10T08:57:23.448095+00:00",
+  "generator": "tools/generate_assets.py",
+  "classification": "generated / placeholder",
+  "warning": "Not official animation frames. Replace with real frames in picture/generated/character/<action>/.",
+  "sources": [
+    "picture/original/file.png"
+  ],
+  "outputs": [
+    {
+      "path": "picture/generated/character/idle/idle_00.png",
+      "action": "idle",
+      "direction": null,
+      "index": 0,
+      "note": "background-removed placeholder derived from original portrait"
+    }
+  ],
+  "naming_convention": "<action>[_<left|right>]_<NN>.png"
+}

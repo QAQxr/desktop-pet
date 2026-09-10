@@ -1,0 +1,62 @@
+# Desktop Pet 开发日志 — Step 4：透明窗口 + 加载角色 + 显示
+
+日期：2026-09-10
+项目：~/opencode/projects/desktop-pet/
+执行者：opencode (deepseek-flash)
+
+目标（用户 Step 4）：
+启动程序 → 出现无边框透明窗口 → 加载角色 → 角色正常显示 → 其他区域透明。
+
+---
+
+## 1. 生成程序化占位素材  [gen]
+
+- 时间：2026-09-10 01:57
+- 命令：`conda run -n desktop-pet python tools/generate_assets.py`
+- 读取（只读）：`picture/original/file.png`
+- 生成：
+  - `picture/generated/character/idle/idle_00.png`（RGBA，923×938，透明比例 50.5%）
+  - `picture/generated/MANIFEST.json`（标记 `generated / placeholder`）
+- 方法：边界洪水填充去白底 + 0.6px alpha 羽化 + 透明边裁剪
+- 结果：成功，四角 alpha=0
+- 覆盖：可重复执行（幂等覆盖生成的同路径文件；不触碰 original）
+- 回滚：删除 `picture/generated/`
+
+## 2. 单元测试  [run]
+
+- 时间：2026-09-10 01:58
+- 命令：`conda run -n desktop-pet python -m unittest discover -s tests -v`
+- 结果：5 项全部通过
+  - Config 加载 / 未知键忽略
+  - 抠图透明角
+  - 帧命名正则
+  - 素材发现回退
+
+## 3. 离屏渲染自检  [run]
+
+- 命令：`QT_QPA_PLATFORM=offscreen conda run --no-capture-output -n desktop-pet python src/main.py --screenshot logs/step4-offscreen.png --screenshot-delay 0.5`
+- 结果：成功；窗口 216×220，四角 alpha=0，角色正常渲染
+- 产物：`logs/step4-offscreen.png`
+
+## 4. 真实 Wayland 运行  [run]
+
+- 命令：`conda run --no-capture-output -n desktop-pet python src/main.py --screenshot logs/step4-wayland.png --screenshot-delay 1.0`
+- 环境：XDG_SESSION_TYPE=wayland，WAYLAND_DISPLAY=wayland-0，GNOME
+- 结果：成功（exit 0），窗口 216×220，截图与离屏一致
+- 产物：`logs/step4-wayland.png`
+- 进程：程序执行后自行退出，无残留进程
+
+---
+
+## 结论
+
+Step 4 目标达成：无边框透明窗口可正常显示角色，其余区域透明，Wayland 与离屏均无崩溃。
+
+## Storage Impact
+
+| 项 | 体积 |
+|---|---|
+| 生成的占位素材 | ~0.53 MB |
+| 自检截图 ×2 | ~0.11 MB |
+| 运行日志 | 数 KB |
+| conda 环境 | ~1.2 GB（含依赖） |
