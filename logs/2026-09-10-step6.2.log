@@ -1,0 +1,106 @@
+# Desktop Pet 开发日志 — Step 6.2：显示层 / 平台后端可行性调查
+
+日期：2026-09-10
+项目：~/opencode/projects/desktop-pet/
+执行者：opencode (deepseek-flash)
+授权：用户要求「桌宠显示层/平台后端可行性验证」。
+
+标签：[investigate] [experiment] [run]
+
+---
+
+## 0. 依赖 / 环境
+
+**No new dependency installed.**
+未改 conda 环境、未改系统、未安装 wayland-info/LayerShellQt 等。
+
+## 1. 环境检测（只读）
+
+| 项 | 值 |
+|---|---|
+| XDG_SESSION_TYPE | wayland |
+| XDG_CURRENT_DESKTOP | ubuntu:GNOME |
+| WAYLAND_DISPLAY | wayland-0 |
+| DISPLAY | :0（XWayland 可用） |
+| Compositor | gnome-shell / Mutter 42.9 |
+| Qt platform | wayland（原生）/ xcb（XWayland），PySide6 6.11.2 |
+
+## 2. Wayland 协议能力检测
+
+方法一（协议追踪）：`WAYLAND_DEBUG=1` 运行真实客户端，解析 `wl_registry.global`。
+方法二（最小测试程序）：新增 `experiments/wayland_probe.py`，用 ctypes 调用
+`libwayland-client`（`wl_proxy_marshal_flags` + `wl_registry_interface`）枚举全局协议，零依赖。
+
+结果：
+
+```text
+zwlr_layer_shell_v1: NOT AVAILABLE
+gtk_shell1:          AVAILABLE
+```
+
+**结论：GNOME/Mutter 不提供 `wlr-layer-shell`。** 依用户要求，停止 Layer Shell 实现，不安装 compositor。
+
+## 3. 输入穿透实验
+
+### 3.1 `experiments/mask_probe.py`
+
+- native Wayland + `WAYLAND_DEBUG=1`：观察到 `wl_surface.set_input_region(wl_region)` → `setMask` 映射为 Wayland 输入区域。
+- X11/xcb：`xwininfo -shape` 显示 `Window shape extents: 200x200+150+100`（= mask × DPR 1.25）→ shape 生效。
+
+### 3.2 `experiments/x11_passthrough_probe.py`（XTEST 真实点击）
+
+背景窗口 + 遮罩桌宠窗口，用 libXtst 合成点击（按 DPR 1.25 换算物理坐标）：
+
+```text
+background_clicks=1 pet_clicks=1
+PASSTHROUGH_OUTSIDE=PASS
+PET_RECEIVES_INSIDE=PASS
+```
+
+**结论：区域外点击穿透到下层应用，区域内点击由桌宠接收。**
+
+## 4. 方案比较与推荐
+
+- A. Qt 顶层窗口（现用）：xcb 定位可用，原生 Wayland 不可定位；输入穿透可用。
+- B. Layer Shell：GNOME 不可用；wlroots/KDE 预期可用（未实测）。
+- C. GNOME Shell Extension：可行但成本高、随版本失效、难复用 PySide6 渲染。
+- D. 其他 DE：未安装未验证。
+
+推荐：保持 Qt 顶层窗口后端；未来在 `PositioningService` 抽象背后扩展 `DisplayBackend`，
+不重写 movement/animation。**本阶段不实现 Layer Shell 后端。**
+
+## 5. 新增文件
+
+- `experiments/wayland_probe.py`
+- `experiments/mask_probe.py`
+- `experiments/x11_passthrough_probe.py`
+- `experiments/README.md`（结论汇总）
+- `logs/2026-09-10-step6.2.log`（本文件）
+
+均为调查/回归用；不参与运行时，可整体删除。
+
+## 6. 修改文件
+
+- `README.md` — 新增「桌宠显示层 / 平台后端（可行性调查）」章节。
+
+## 7. 未改动
+
+- `src/**`（MovementModel / MovementController / Animation / PositioningService 均未改）
+- `picture/original/**`（MD5 与权限未变）
+
+## 8. 测试 / 运行
+
+- 现有测试：52/52 通过（未新增生产测试）。
+- 实验运行见第 2、3 节。
+
+## 9. 回滚方式
+
+- `rm -rf experiments/`，还原 `README.md`（或 `git revert`）。
+- 无依赖/环境回滚。
+
+## 10. 结论
+
+- 本机 GNOME Wayland **不支持** wlr-layer-shell；独立桌面层需 GNOME Extension（不建议现在做）
+  或换 wlroots/KDE（不为本项目更换环境）。
+- 输入穿透问题**已解决**：`setMask` 在 Wayland 与 X11 均可，且 XWayland 真实点击验证通过。
+- 真实窗口移动当前继续用 `xcb`（Step 6.1 已解耦，改后端不影响核心逻辑）。

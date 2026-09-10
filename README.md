@@ -384,6 +384,45 @@ set_position(x, y) -> bool   # False 表示平台未真正移动，调用方不�
 
 ---
 
+## 桌宠显示层 / 平台后端（可行性调查）
+
+目标：未来让桌宠显示在独立的“桌宠层”上、层内自由移动、且**透明区域点击穿透**。调查脚本见
+[`experiments/README.md`](experiments/README.md)（可删除，不参与运行时）。
+
+**在本机实测结论（Ubuntu 22.04 + GNOME + Wayland / Mutter）：**
+
+| 能力 | 结果 |
+|---|---|
+| `zwlr_layer_shell_v1` | **不可用**（GNOME/Mutter 未实现） |
+| `setMask` → Wayland `set_input_region` | **可用**（协议日志确认） |
+| `setMask` → X11 窗口 shape | **可用**（`xwininfo -shape` 确认） |
+| 真实点击穿透（区域外→下层应用，区域内→桌宠） | **PASS**（XWayland + XTEST 实测） |
+
+**方案对照：**
+
+| 方案 | 本机可用 | 定位 | 输入穿透 | 成本 |
+|---|---|---|---|---|
+| A. Qt 顶层窗口 + `move()`（现用） | 是 | xcb 可以；原生 Wayland 不行 | `setMask` 可行 | 低（已实现） |
+| B. Layer Shell | GNOME **否**，wlroots/KDE 预期可以 | 自由/锚定 | 区域制 | 需新后端 + 多 compositor 测试 |
+| C. GNOME Shell Extension | 技术上可行，未实现 | 完全可控 | 完全可控 | 高（JS、随 GNOME 版本失效、难复用 PySide6 渲染） |
+| D. 其他桌面（KDE/wlroots） | 未安装，未验证 | Layer Shell 预期可以 | 区域制 | 架构应保持多后端 |
+
+> B/C/D 对他家 compositor 的支持来自协议/文档，**本机未实测**，标注为预期而非结论。
+
+**推荐：** 保持当前 Qt 顶层窗口后端；需要时在既有 `PositioningService` 抽象**背后**新增后端，
+不重写 movement/animation：
+
+```text
+Desktop Pet core → DisplayBackend(abstract) → QtTopLevelBackend（现用）
+                                            → LayerShellBackend（未来, wlroots/KDE）
+                                            → GnomeExtensionBackend（未来, 较重, 可选）
+```
+
+当前 GNOME 环境：真实移动用 `xcb`；输入穿透用 `setMask`。**不**在本阶段实现 Layer Shell
+后端（本机无法运行，且禁止安装/切换 compositor）。
+
+---
+
 ## 已知限制
 
 - 当前只有**单帧静态立绘**，尚无正式动画帧；动作表现为占位。
