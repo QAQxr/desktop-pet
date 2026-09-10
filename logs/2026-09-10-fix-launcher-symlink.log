@@ -1,0 +1,80 @@
+# Desktop Pet 修复日志 — 启动器软链接路径解析
+
+日期：2026-09-10
+项目：~/opencode/projects/desktop-pet/
+执行者：opencode (deepseek-flash)
+授权：用户报告 Step 6.3 测试中发现的 bug 并要求修复（不重构启动系统）。
+
+---
+
+## 问题
+
+通过软链接启动：
+
+```bash
+ln -s ~/opencode/projects/desktop-pet/run.sh ~/.local/bin/pet
+pet
+```
+
+报错：
+
+```text
+.../python: can't open file '/home/o_o/.local/bin/src/main.py'
+```
+
+原因：`run.sh` 用 `BASH_SOURCE[0]` 直接取目录，软链接场景下得到 `~/.local/bin`，
+导致项目根目录解析错误。
+
+## 修复
+
+`run.sh` 先解析**自身真实路径**（`readlink -f`，带不依赖 GNU 的 `while -h` 回退），
+再计算项目根目录；不依赖当前工作目录，不修改软链接目标。
+
+```bash
+SELF="${BASH_SOURCE[0]}"
+if readlink -f "$SELF" >/dev/null 2>&1; then
+  SCRIPT_PATH="$(readlink -f "$SELF")"
+else
+  while [ -h "$SELF" ]; do
+    DIR="$(cd -P "$(dirname "$SELF")" && pwd)"
+    SELF="$(readlink "$SELF")"
+    [[ "$SELF" != /* ]] && SELF="$DIR/$SELF"
+  done
+  SCRIPT_PATH="$(cd -P "$(dirname "$SELF")" && pwd)/$(basename "$SELF")"
+fi
+HERE="$(dirname "$SCRIPT_PATH")"
+```
+
+## 新增测试
+
+- `tests/test_launcher.py`（5 项，使用 `--help`，不启动 GUI）：
+  - 直接运行 `run.sh --help`
+  - 临时目录软链接运行
+  - 从其他 cwd（`$HOME`）软链接运行
+  - **相对路径**软链接运行
+  - 参数透传（`--move/--speed/--run-seconds/--screenshot-seq` 出现在 usage 中）
+
+## 验证
+
+| 场景 | 命令 | 结果 |
+|---|---|---|
+| 直接 | `./run.sh --run-seconds 2` | 正确加载项目素材，正常退出 |
+| 软链接 | `~/.local/bin/pet --run-seconds 2`（cwd=~） | 正确 |
+| 其他 cwd | `cd /tmp && ~/.local/bin/pet --run-seconds 2` | 正确 |
+| 参数透传 | `pet --move right --speed 300 --start-x 100 --start-y 300 --run-seconds 2` | `applied=True`，移动 100→554（≈300px/s 区间） |
+| SIGHUP | 向 python 进程发 SIGHUP | `received SIGHUP; shutting down`，无孤儿 |
+| 完整测试 | `python -m unittest discover -s tests` | **57/57 通过** |
+
+## 修改 / 新增文件
+
+- 修改：`run.sh`
+- 新增：`tests/test_launcher.py`、`logs/2026-09-10-fix-launcher-symlink.log`
+- 未改动：`src/**`、`picture/original/**`（MD5/权限不变）
+
+## 依赖 / 环境
+
+**No new dependency installed.**（`readlink` 属 coreutils，系统自带）
+
+## 回滚
+
+- 还原 `run.sh` 至上一版本，删除 `tests/test_launcher.py`（或 `git revert`）。

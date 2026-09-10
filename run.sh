@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Resolve this script's real path, following symlinks, so the project root is
+# found correctly when invoked as e.g. ~/.local/bin/pet -> .../run.sh.
+# Must not depend on the current working directory.
+SELF="${BASH_SOURCE[0]}"
+if readlink -f "$SELF" >/dev/null 2>&1; then
+  SCRIPT_PATH="$(readlink -f "$SELF")"
+else
+  while [ -h "$SELF" ]; do
+    DIR="$(cd -P "$(dirname "$SELF")" && pwd)"
+    SELF="$(readlink "$SELF")"
+    [[ "$SELF" != /* ]] && SELF="$DIR/$SELF"
+  done
+  SCRIPT_PATH="$(cd -P "$(dirname "$SELF")" && pwd)/$(basename "$SELF")"
+fi
+HERE="$(dirname "$SCRIPT_PATH")"
 ENV_NAME="${DESKTOP_PET_ENV:-desktop-pet}"
 
 # Resolve the conda env prefix once, then exec python directly.
