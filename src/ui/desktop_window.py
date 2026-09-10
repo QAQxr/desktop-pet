@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QGuiApplication, QPainter, QPixmap
 from PySide6.QtWidgets import QWidget
 
 from animation.transform import AnimationTransform
 from config.settings import Config
+from ui.input_mask import region_from_alpha
 
 
 class DesktopWindow(QWidget):
@@ -15,8 +16,13 @@ class DesktopWindow(QWidget):
 
     The window owns the pet's real (world) position. It receives a visual
     ``AnimationTransform`` from the animation layer and applies it only while
-    painting, so animation offsets never move the actual window.
+    painting. Pointer interaction is forwarded as raw global coordinates via
+    signals; the interaction layer decides what to do with them.
     """
+
+    mouse_pressed = Signal(object)
+    mouse_moved = Signal(object)
+    mouse_released = Signal(object)
 
     def __init__(
         self,
@@ -30,6 +36,7 @@ class DesktopWindow(QWidget):
         self._frame_path = Path(frame_path)
         self._padding = max(0, int(padding))
         self._transform = AnimationTransform.identity()
+        self._input_region = None
         self.setWindowTitle("Desktop Pet")
 
         flags = Qt.FramelessWindowHint | Qt.Tool
@@ -46,7 +53,21 @@ class DesktopWindow(QWidget):
         self._pixmap = pixmap.scaledToHeight(height, Qt.SmoothTransformation)
         pad = self._padding
         self.resize(self._pixmap.width() + 2 * pad, self._pixmap.height() + 2 * pad)
+        self._apply_input_mask()
         self._place_initially()
+
+    def _apply_input_mask(self) -> None:
+        if not self.config.interaction.enabled or not self.config.interaction.input_mask:
+            return
+        region = region_from_alpha(
+            self._pixmap,
+            threshold=self.config.interaction.mask_alpha_threshold,
+            dilate=self.config.interaction.mask_dilate,
+        )
+        if not region.isEmpty():
+            region.translate(self._padding, self._padding)
+            self.setMask(region)
+            self._input_region = region
 
     def _place_initially(self) -> None:
         start_x = self.config.window.start_x
@@ -62,12 +83,27 @@ class DesktopWindow(QWidget):
     def current_frame(self) -> Path:
         return self._frame_path
 
+    def input_region(self):
+        return self._input_region
+
     def set_animation_transform(self, transform: AnimationTransform) -> None:
         self._transform = transform
         self.update()
 
     def animation_transform(self) -> AnimationTransform:
         return self._transform
+
+    def mousePressEvent(self, event) -> None:
+        self.mouse_pressed.emit(event.globalPosition().toPoint())
+        event.accept()
+
+    def mouseMoveEvent(self, event) -> None:
+        self.mouse_moved.emit(event.globalPosition().toPoint())
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:
+        self.mouse_released.emit(event.globalPosition().toPoint())
+        event.accept()
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)

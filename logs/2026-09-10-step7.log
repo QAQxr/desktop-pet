@@ -1,0 +1,77 @@
+# Desktop Pet 开发日志 — Step 7：鼠标交互（点击 / 拖动 / 输入穿透）
+
+日期：2026-09-10
+项目：~/opencode/projects/desktop-pet/
+执行者：opencode (deepseek-flash)
+授权：用户要求实现 Step 7。
+
+标签：[code] [test] [run]
+
+---
+
+## 0. 依赖 / 环境
+
+**No new dependency installed.**（复用 PySide6 / numpy；XTEST 用系统 libXtst/libX11，仅测试脚本，不入项目依赖）
+
+## 1. 新增文件 [code]
+
+- `src/interaction/__init__.py`
+- `src/interaction/controller.py` — `InteractionController` / `InteractionState`（纯 Python，无 Qt）
+- `src/ui/input_mask.py` — 由 alpha 生成 `QRegion` 输入遮罩
+- `tests/test_interaction.py` — 11 项测试
+- `logs/2026-09-10-step7.log`（本文件）
+
+## 2. 修改文件 [code/cfg]
+
+- `src/movement/movement.py` — 新增公开 `set_position()`（clamp，纯逻辑），供拖动同步
+- `src/ui/desktop_window.py` — 新增 `mouse_pressed/moved/released` 信号；应用输入遮罩
+- `src/config/settings.py` — 新增 `InteractionConfig`
+- `config/config.yaml` — 新增 `interaction` 段
+- `src/main.py` — 始终创建 bounds/model/controller；接入 `InteractionController`；新增 `--no-interaction`；日志
+- `README.md` — Step 7 文档
+
+## 3. 关键实现
+
+- 点击：按下即 `DRAGGING`，记录 `drag_offset`；移动超过 `click_threshold`(4px) 才计为拖动，否则松手为点击。
+- 拖动：`new_position = 鼠标全局 - drag_offset`，clamp 到 `MovementBounds`；经 `PositioningService` 移动窗口。
+- 协调：按下时若自动移动在跑 → `pause()`；松手 → `resume()`；否则保持 IDLE。
+- 输入穿透：alpha>threshold 生成 `QRegion`（膨胀 3px），`setMask`。
+  - 修正点：`QRegion(QBitmap)` 以 bit 0 为“内部”，故标记**透明**像素为 1。
+- 动画与移动核心未破坏：`AnimationTransform` 只改绘制；`window.move` 只经定位层。
+
+## 4. 测试 [test]
+
+- 命令：`conda run -n desktop-pet python -m unittest discover -s tests`
+- 结果：**69/69 通过**（新增 11）
+- 覆盖：press/click/release、拖动 offset 无跳变、超阈值才 drag_start、clamp、自动移动 pause/resume、IDLE 保持、禁用忽略、解耦（movement 无 Qt/interaction/ui；interaction 无 Qt）
+
+## 5. 真实运行验证 [run]（XWayland，XTEST 合成真实指针）
+
+| 场景 | 结果 |
+|---|---|
+| 点击角色 | 日志 `pet mouse press` + `pet mouse click` |
+| 点击透明角落 | 桌宠 press 计数不变 → **穿透 PASS** |
+| 拖动角色 +300px | `pet drag start`→`pet drag end`；窗口 X 375→675（Δ=300 物理）无跳变 |
+| 自动移动中拖动 | 拖动前 X=464 移动中 → 拖到 540 → `state=walking` 恢复并继续至边界停止 |
+| 原生 Wayland 启动 | input mask 385 rects；交互启用；定位不支持已提示；干净退出 |
+| 退出/孤儿 | `--run-seconds` 正常退出；`pgrep` 无残留 |
+
+## 6. 生成物
+
+- 测试截图/日志：`/tmp/opencode/step7_*`（项目外，可删）；无新正式素材。
+
+## 7. 原始素材保护
+
+- `picture/original/` MD5 与权限未变；未写入原始目录。
+
+## 8. 回滚
+
+- 删除 `src/interaction/`、`src/ui/input_mask.py`、`tests/test_interaction.py`；
+  还原 `src/movement/movement.py`、`src/ui/desktop_window.py`、`src/config/settings.py`、`config/config.yaml`、`src/main.py`、`README.md`（或 `git revert`）。
+
+## 9. 已知问题
+
+- 输入遮罩为静态（不随 Idle 浮动/缩放重算），边缘数像素误差。
+- X11 下 `setMask` 同时裁剪绘制（因区域覆盖全部不透明像素，通常无可见影响）。
+- 原生 Wayland 拖动不会真正移动窗口（平台限制，逻辑位置仍更新）。
+- 未实现完整状态机（Step 8）。

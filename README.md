@@ -113,11 +113,14 @@ desktop-pet/
 │   ├── positioning/       # 平台窗口定位抽象（Step 6.1）
 │   │   ├── service.py        # PositioningService + 能力判定
 │   │   └── qt.py             # QtPositioningService（Qt 适配）
+│   ├── interaction/       # 鼠标交互层（Step 7，纯 Python，无 Qt）
+│   │   └── controller.py     # InteractionController（点击 / 拖动 / 状态）
 │   ├── behavior/          # 状态机 / 自主行为（后续）
 │   ├── world/             # 桌面物件（后续）
 │   ├── pet/               # 桌宠核心（后续）
 │   └── ui/                # 透明窗口（只负责显示）
 │       └── desktop_window.py
+│       └── input_mask.py     # 由 alpha 生成输入区域（setMask）
 ├── config/
 │   └── config.yaml
 ├── tools/
@@ -211,7 +214,18 @@ desktop-pet/
 - [x] X11/XWayland：`applied=True`，真实窗口移动（回归验证通过）
 - [x] 退出生命周期：`run.sh` 直接 `exec` 环境 python（不再经 `conda run` 转发）；程序安装 `SIGHUP/SIGINT/SIGTERM` 处理器优雅退出，关闭终端不再留下孤儿窗口/进程
 
-尚未实现（后续 Step）：点击/拖动、状态机、桌面物件、自主行为。
+### Step 7（鼠标交互：点击 / 拖动）
+
+- [x] 独立交互层 `interaction/`（纯 Python，无 Qt），`main.py` 只负责组装
+- [x] 左键点击：`pet mouse press` / `pet mouse click`
+- [x] 拖动：保持鼠标按下点与桌宠的相对偏移（无位置跳变），松手结束
+- [x] 拖动时自动移动 `pause()`，松手后按原状态 `resume()` 或保持 IDLE
+- [x] 拖动走 `PositioningService`，`MovementModel` 保持无 Qt / 无鼠标事件
+- [x] 输入区域：由角色 alpha 生成 `setMask`，透明区域点击**穿透**到下层应用
+- [x] 拖动位置使用 `MovementBounds` clamp，不会完全移出屏幕
+- [x] 最小交互状态 `InteractionState.IDLE / DRAGGING`（完整状态机留待 Step 8）
+
+尚未实现（后续 Step）：状态机、桌面物件、自主行为。
 
 ---
 
@@ -384,6 +398,65 @@ set_position(x, y) -> bool   # False 表示平台未真正移动，调用方不�
 
 ---
 
+## 鼠标交互（Step 7）
+
+### 分层
+
+```text
+DesktopWindow (Qt)  --mouse_pressed/moved/released-->  InteractionController (纯 Python)
+                                                              │
+                                        ┌─────────────────────┼──────────────────────┐
+                                  WorldPosition          PositioningService      MovementController
+                                  (拖动目标)              (实际移动窗口)           (拖动时 pause/resume)
+```
+
+- `InteractionController` 不 import Qt；窗口把全局坐标以信号抛出，交互层决定“点击还是拖动”。
+- `MovementModel` 仍然无 Qt、无鼠标事件；拖动通过公开的 `set_position()` 同步模型位置。
+
+### 点击 / 拖动
+
+- 按下进入 `DRAGGING` 并记录 `drag_offset = 鼠标全局坐标 - 桌宠世界坐标`。
+- 移动超过 `click_threshold`（默认 4px）才算拖动，否则松手判定为点击。
+- 拖动时 `new_position = 鼠标 - drag_offset`，保持手感；超出 `MovementBounds` 时 clamp。
+- 松手：若按下前正在自动移动 → `resume()`；否则保持 IDLE。
+
+### 输入穿透
+
+- 由角色 alpha（阈值 + 膨胀）生成 `QRegion`，`setMask` 后：
+  - **Wayland**：映射为 `wl_surface.set_input_region`（仅输入）。
+  - **X11/XWayland**：映射为窗口 shape（同时裁剪绘制；区域覆盖全部不透明像素，视觉无变化）。
+- 因此透明区域点击穿透到下层应用，角色区域内正常接收点击（XTEST 实测通过）。
+- 遮罩是**静态**的（基于缩放后的基准帧），Idle 的 ±2px 浮动 / 1% 缩放不会重算遮罩，可能造成边缘几像素的误差（见已知限制）。
+
+### 配置
+
+```yaml
+interaction:
+  enabled: true
+  input_mask: true
+  mask_alpha_threshold: 1
+  mask_dilate: 3
+  click_threshold: 4.0
+  drag_enabled: true
+```
+
+### 运行 / 验证
+
+```bash
+# 真实点击/拖动/穿透（GNOME 需 XWayland）
+QT_QPA_PLATFORM=xcb pet
+
+# 自动移动时拖动（应暂停自动移动、松手后恢复）
+QT_QPA_PLATFORM=xcb pet --move right --speed 120
+
+# 关闭交互
+pet --no-interaction
+```
+
+日志会出现：`pet mouse press` / `pet mouse click` / `pet drag start` / `pet drag move` / `pet drag end`。
+
+---
+
 ## 桌宠显示层 / 平台后端（可行性调查）
 
 目标：未来让桌宠显示在独立的“桌宠层”上、层内自由移动、且**透明区域点击穿透**。调查脚本见
@@ -431,7 +504,8 @@ Desktop Pet core → DisplayBackend(abstract) → QtTopLevelBackend（现用）
 - `rotation_amplitude` 默认为 0（不倾斜），因为单帧旋转在边缘容易显得不自然。
 - 移动**不做碰撞、寻路、反弹、自动转身**；到达边界即 clamp 并停止。
 - 多显示器：仅使用**当前窗口所在屏幕**的 `availableGeometry`，不实现跨屏移动（known limitation）。
-- **原生 Wayland 下窗口移动不可见**，需 `QT_QPA_PLATFORM=xcb`（见上）。
+- **原生 Wayland 下窗口移动不可见**，需 `QT_QPA_PLATFORM=xcb`（见上）；因此**拖动在原生 Wayland 下也不会真正移动窗口**（逻辑位置仍更新）。
+- 输入区域为**静态遮罩**（基于基准帧 + 膨胀），Idle 浮动/缩放时边缘有数像素误差；X11 下 `setMask` 同时裁剪绘制（区域覆盖全部不透明像素，通常无可见影响）。
 - 实测参考：30 FPS 下平均 CPU 约 10%、RSS 约 89 MB（软件渲染，随硬件与合成器而异）。
 - 设计稿中的动作/物件为参考图，未切分，暂不能直接作为素材。
 - `file` / `file.png` 白底抠图对浅色毛发边缘可能出现轻微残留，属占位级质量。
@@ -483,7 +557,7 @@ Desktop Pet core → DisplayBackend(abstract) → QtTopLevelBackend（现用）
 ```text
 Step 5  程序化 idle 动画（呼吸 / 轻微浮动）   ✅ 已完成
 Step 6  基础移动（速度、目标点、左右方向）    ✅ 已完成
-Step 7  鼠标点击 / 拖动
+Step 7  鼠标点击 / 拖动                      ✅ 已完成
 Step 8  状态机（IDLE / WALK / SIT …）
 Step 9  桌面物件（Chair 等）
 Step 10 简单自主行为（规则系统，无 LLM）

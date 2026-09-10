@@ -37,3 +37,11 @@ movement:
   speed: 120.0            # pixels per second
   direction: right        # left | right | up | down (used by --movement-test)
   fps: 60                 # movement tick rate
+
+interaction:
+  enabled: true
+  input_mask: true        # clip input (and X11 window shape) to the character silhouette
+  mask_alpha_threshold: 1 # alpha <= this is treated as transparent
+  mask_dilate: 3          # px margin so the moving sprite stays clickable
+  click_threshold: 4.0    # px; pointer travel below this counts as a click, above as a drag
+  drag_enabled: true

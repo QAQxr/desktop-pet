@@ -56,6 +56,16 @@ class MovementConfig:
 
 
 @dataclass
+class InteractionConfig:
+    enabled: bool = True
+    input_mask: bool = True
+    mask_alpha_threshold: int = 1
+    mask_dilate: int = 3
+    click_threshold: float = 4.0
+    drag_enabled: bool = True
+
+
+@dataclass
 class Config:
     walk_speed: float = 80.0
     idle_time: float = 5.0
@@ -66,6 +76,7 @@ class Config:
     platform: PlatformConfig = field(default_factory=PlatformConfig)
     animation: AnimationConfig = field(default_factory=AnimationConfig)
     movement: MovementConfig = field(default_factory=MovementConfig)
+    interaction: InteractionConfig = field(default_factory=InteractionConfig)
 
     @property
     def project_root(self) -> Path:
@@ -116,6 +127,8 @@ class Config:
             direction=str(movement_raw.get("direction", MovementConfig.direction)),
             fps=int(movement_raw.get("fps", MovementConfig.fps)),
         )
+
+        interaction = InteractionConfig(**_pick(raw.get("interaction"), InteractionConfig))
         return cls(
             walk_speed=float(raw.get("walk_speed", cls.walk_speed)),
             idle_time=float(raw.get("idle_time", cls.idle_time)),
@@ -126,6 +139,7 @@ class Config:
             platform=platform,
             animation=animation,
             movement=movement,
+            interaction=interaction,
         )
 
 

@@ -74,6 +74,15 @@ class MovementModel:
     def set_direction(self, direction: Direction) -> None:
         self._direction = direction
 
+    def set_position(self, position: WorldPosition) -> WorldPosition:
+        """Move the model directly (e.g. after a user drag), clamped to bounds.
+
+        Kept as a public, Qt-free operation so the interaction layer never
+        touches private state.
+        """
+        self._position = self._bounds.clamp(position)
+        return self._position
+
     def velocity(self) -> tuple[float, float]:
         if self._state is not MovementState.WALKING:
             return (0.0, 0.0)

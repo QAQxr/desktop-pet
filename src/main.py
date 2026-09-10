@@ -21,6 +21,7 @@ from animation.asset_loader import AssetDiscovery  # noqa: E402
 from animation.controller import AnimationController  # noqa: E402
 from animation.idle import IdleAnimation  # noqa: E402
 from config.settings import Config  # noqa: E402
+from interaction.controller import InteractionController  # noqa: E402
 from movement.bounds import MovementBounds  # noqa: E402
 from movement.controller import MovementController  # noqa: E402
 from movement.movement import Direction, MovementModel  # noqa: E402
@@ -44,6 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-interval", type=float, default=0.5, help="seconds between sequence frames")
     parser.add_argument("--run-seconds", type=float, default=None, help="auto-quit after N seconds")
     parser.add_argument("--no-animation", action="store_true", help="disable animation for this run")
+    parser.add_argument("--no-interaction", action="store_true", help="disable mouse interaction for this run")
     parser.add_argument("--pause-at", type=float, default=None, help="pause movement+animation N seconds after start")
     parser.add_argument("--resume-at", type=float, default=None, help="resume movement+animation N seconds after start")
 
@@ -161,11 +163,11 @@ def main() -> int:
     if args.start_y is not None:
         config.window.start_y = args.start_y
     logger.info(
-        "config loaded: window_scale=%s behavior_enabled=%s movement.speed=%s movement.enabled=%s",
+        "config loaded: window_scale=%s behavior_enabled=%s movement.speed=%s interaction.enabled=%s",
         config.window_scale,
         config.behavior_enabled,
         config.movement.speed,
-        config.movement.enabled,
+        config.interaction.enabled,
     )
     describe_environment(logger)
     resolve_platform(config, logger)
@@ -197,6 +199,11 @@ def main() -> int:
         window.x(),
         window.y(),
     )
+    region = window.input_region()
+    if region is not None:
+        logger.info(
+            "input mask: rects=%s bounds=%s", region.rectCount(), region.boundingRect().getRect()
+        )
 
     positioning = QtPositioningService(window, app.platformName())
     logger.info(
@@ -212,15 +219,45 @@ def main() -> int:
         animation_controller.start()
         logger.info("animation started (fps=%.1f)", animation_controller.fps)
 
+    screen = window.screen()
+    geo = screen.availableGeometry()
+    bounds = MovementBounds.from_screen(
+        geo.x(), geo.y(), geo.width(), geo.height(), window.width(), window.height()
+    )
+
     direction = resolve_direction(args, config)
-    movement_enabled = config.movement.enabled and not args.no_movement and direction is not None
     speed = args.speed if args.speed is not None else config.movement.speed
-    movement_controller = None
-    movement_model = None
     movement_start = WorldPosition(window.x(), window.y())
+    movement_model = MovementModel(
+        position=movement_start,
+        speed=speed,
+        bounds=bounds,
+        direction=direction or Direction.RIGHT,
+    )
+    movement_controller = MovementController(movement_model, fps=config.movement.fps, parent=window)
+
+    trace = {"count": 0}
+
+    def on_position(position: WorldPosition) -> None:
+        applied = positioning.set_position(position.x, position.y)
+        trace["count"] += 1
+        if trace["count"] % max(1, config.movement.fps // 2) == 0:
+            logger.info(
+                "movement: logical=(%.0f, %.0f) applied=%s state=%s window=(%s,%s)",
+                position.x,
+                position.y,
+                applied,
+                movement_model.state.value,
+                window.x(),
+                window.y(),
+            )
+
+    movement_controller.position_changed.connect(on_position)
+
+    auto_move = config.movement.enabled and not args.no_movement and direction is not None
     movement_started_at = QElapsedTimer()
 
-    if movement_enabled:
+    if auto_move:
         if not positioning.supports_physical_positioning():
             logger.warning(
                 "physical window positioning is not available on platform '%s' "
@@ -229,40 +266,6 @@ def main() -> int:
                 "QT_QPA_PLATFORM=xcb ./run.sh",
                 positioning.platform_name(),
             )
-
-        screen = window.screen()
-        geo = screen.availableGeometry()
-        bounds = MovementBounds.from_screen(
-            geo.x(), geo.y(), geo.width(), geo.height(), window.width(), window.height()
-        )
-        movement_model = MovementModel(
-            position=movement_start,
-            speed=speed,
-            bounds=bounds,
-            direction=direction,
-        )
-        movement_controller = MovementController(
-            movement_model, fps=config.movement.fps, parent=window
-        )
-
-        trace = {"count": 0, "last": movement_start}
-
-        def on_position(position: WorldPosition) -> None:
-            applied = positioning.set_position(position.x, position.y)
-            trace["count"] += 1
-            trace["last"] = position
-            if trace["count"] % max(1, config.movement.fps // 2) == 0:
-                logger.info(
-                    "movement: logical=(%.0f, %.0f) applied=%s state=%s window=(%s,%s)",
-                    position.x,
-                    position.y,
-                    applied,
-                    movement_model.state.value,
-                    window.x(),
-                    window.y(),
-                )
-
-        movement_controller.position_changed.connect(on_position)
         movement_controller.start()
         movement_started_at.start()
         logger.info(
@@ -297,14 +300,52 @@ def main() -> int:
 
         app.aboutToQuit.connect(finalize_movement)
 
+    interaction_controller = None
+    if config.interaction.enabled and config.interaction.drag_enabled and not args.no_interaction:
+        drag_trace = {"count": 0}
+
+        def on_drag_move(pos: WorldPosition) -> None:
+            drag_trace["count"] += 1
+            if drag_trace["count"] % 6 == 0:
+                logger.info("pet drag move world=(%.0f,%.0f)", pos.x, pos.y)
+
+        interaction_controller = InteractionController(
+            bounds=bounds,
+            positioning=positioning,
+            movement=movement_controller,
+            model=movement_model,
+            click_threshold=config.interaction.click_threshold,
+            on_press=lambda gx, gy: logger.info("pet mouse press global=(%.0f,%.0f)", gx, gy),
+            on_click=lambda gx, gy: logger.info("pet mouse click global=(%.0f,%.0f)", gx, gy),
+            on_drag_start=lambda pos: logger.info("pet drag start world=(%.0f,%.0f)", pos.x, pos.y),
+            on_drag_move=on_drag_move,
+            on_drag_end=lambda pos: logger.info(
+                "pet drag end world=(%.0f,%.0f) state=%s", pos.x, pos.y, movement_model.state.value
+            ),
+        )
+        window.mouse_pressed.connect(
+            lambda p: interaction_controller.handle_press(p.x(), p.y(), movement_model.position)
+        )
+        window.mouse_moved.connect(lambda p: interaction_controller.handle_move(p.x(), p.y()))
+        window.mouse_released.connect(lambda p: interaction_controller.handle_release(p.x(), p.y()))
+        logger.info(
+            "interaction enabled: click_threshold=%s input_mask=%s",
+            config.interaction.click_threshold,
+            region is not None,
+        )
+    elif not (config.interaction.enabled and config.interaction.drag_enabled):
+        logger.info("interaction disabled by config")
+
     if args.pause_at is not None:
         def do_pause() -> None:
             if animation_controller is not None:
                 animation_controller.pause()
-            if movement_controller is not None:
-                movement_controller.pause()
-            world = movement_model.position.as_tuple() if movement_model is not None else None
-            logger.info("paused (animation+movement) at t=%.2fs world=%s", args.pause_at, world)
+            movement_controller.pause()
+            logger.info(
+                "paused (animation+movement) at t=%.2fs world=%s",
+                args.pause_at,
+                movement_model.position.as_tuple(),
+            )
 
         QTimer.singleShot(int(args.pause_at * 1000), do_pause)
 
@@ -312,10 +353,12 @@ def main() -> int:
         def do_resume() -> None:
             if animation_controller is not None:
                 animation_controller.resume()
-            if movement_controller is not None:
-                movement_controller.resume()
-            world = movement_model.position.as_tuple() if movement_model is not None else None
-            logger.info("resumed (animation+movement) at t=%.2fs world=%s", args.resume_at, world)
+            movement_controller.resume()
+            logger.info(
+                "resumed (animation+movement) at t=%.2fs world=%s",
+                args.resume_at,
+                movement_model.position.as_tuple(),
+            )
 
         QTimer.singleShot(int(args.resume_at * 1000), do_resume)
 
