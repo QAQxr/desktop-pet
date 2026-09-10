@@ -4,6 +4,7 @@ import argparse
 import logging
 import math
 import os
+import signal
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +25,7 @@ from movement.bounds import MovementBounds  # noqa: E402
 from movement.controller import MovementController  # noqa: E402
 from movement.movement import Direction, MovementModel  # noqa: E402
 from movement.position import WorldPosition  # noqa: E402
+from positioning.qt import QtPositioningService  # noqa: E402
 from ui.desktop_window import DesktopWindow  # noqa: E402
 
 
@@ -94,6 +96,28 @@ def resolve_platform(config: Config, logger: logging.Logger) -> None:
     logger.info("session type '%s'; using Qt default platform plugin", session)
 
 
+def install_signal_handlers(app, logger: logging.Logger) -> None:
+    """Quit cleanly on SIGHUP/SIGINT/SIGTERM.
+
+    Ensures that closing the launching terminal (SIGHUP) tears down the Qt
+    event loop and window instead of leaving an orphan process behind.
+    """
+
+    def handle(signum, frame) -> None:
+        name = getattr(signal.Signals(signum), "name", str(signum))
+        logger.info("received %s; shutting down", name)
+        app.quit()
+
+    for name in ("SIGHUP", "SIGINT", "SIGTERM"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, handle)
+        except (ValueError, OSError):
+            pass
+
+
 def build_animation(config: Config, render_height: int, logger: logging.Logger):
     if not config.animation.enabled or not config.animation.idle.enabled:
         logger.info("idle animation disabled by config")
@@ -148,16 +172,9 @@ def main() -> int:
 
     app = QApplication(sys.argv[:1])
     app.setApplicationName("Desktop Pet")
-
-    platform_name = app.platformName()
-    positioning_supported = platform_name != "wayland"
-    logger.info("Qt platform plugin: %s (positioning_supported=%s)", platform_name, positioning_supported)
-    if not positioning_supported:
-        logger.warning(
-            "native Wayland detected: the compositor ignores window.move(); "
-            "desktop movement will not be visible on screen. "
-            "Use QT_QPA_PLATFORM=xcb (XWayland) for real movement."
-        )
+    logger.info("Qt platform plugin: %s", app.platformName())
+    install_signal_handlers(app, logger)
+    app.aboutToQuit.connect(lambda: logger.info("shutting down: Qt event loop exiting"))
 
     discovery = AssetDiscovery(
         generated_root=config.generated_root_path,
@@ -181,6 +198,13 @@ def main() -> int:
         window.y(),
     )
 
+    positioning = QtPositioningService(window, app.platformName())
+    logger.info(
+        "positioning: platform=%s supports_physical_positioning=%s",
+        positioning.platform_name(),
+        positioning.supports_physical_positioning(),
+    )
+
     animation_controller = None
     if animation is not None:
         animation_controller = AnimationController(animation, fps=config.animation.fps, parent=window)
@@ -197,6 +221,15 @@ def main() -> int:
     movement_started_at = QElapsedTimer()
 
     if movement_enabled:
+        if not positioning.supports_physical_positioning():
+            logger.warning(
+                "physical window positioning is not available on platform '%s' "
+                "(native Wayland). Logical WorldPosition will still update, but the "
+                "window will not visibly move. Run with XWayland/X11 for real movement: "
+                "QT_QPA_PLATFORM=xcb ./run.sh",
+                positioning.platform_name(),
+            )
+
         screen = window.screen()
         geo = screen.availableGeometry()
         bounds = MovementBounds.from_screen(
@@ -215,14 +248,15 @@ def main() -> int:
         trace = {"count": 0, "last": movement_start}
 
         def on_position(position: WorldPosition) -> None:
-            window.move(int(round(position.x)), int(round(position.y)))
+            applied = positioning.set_position(position.x, position.y)
             trace["count"] += 1
             trace["last"] = position
             if trace["count"] % max(1, config.movement.fps // 2) == 0:
                 logger.info(
-                    "movement: world=(%.0f, %.0f) state=%s window=(%s,%s)",
+                    "movement: logical=(%.0f, %.0f) applied=%s state=%s window=(%s,%s)",
                     position.x,
                     position.y,
+                    applied,
                     movement_model.state.value,
                     window.x(),
                     window.y(),

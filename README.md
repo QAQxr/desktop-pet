@@ -110,6 +110,9 @@ desktop-pet/
 │   │   ├── bounds.py         # MovementBounds（屏幕边界 + clamp）
 │   │   ├── movement.py       # Direction / MovementState / MovementModel
 │   │   └── controller.py     # MovementController（Qt 定时驱动）
+│   ├── positioning/       # 平台窗口定位抽象（Step 6.1）
+│   │   ├── service.py        # PositioningService + 能力判定
+│   │   └── qt.py             # QtPositioningService（Qt 适配）
 │   ├── behavior/          # 状态机 / 自主行为（后续）
 │   ├── world/             # 桌面物件（后续）
 │   ├── pet/               # 桌宠核心（后续）
@@ -198,6 +201,15 @@ desktop-pet/
 - [x] 暂停/恢复同时作用于移动与动画，无位置跳变
 - [x] 移动逻辑不依赖 `QWidget` 绘制；窗口只接收 `window.move()` 指令
 - [ ] **注意：当前 “WALK” 只是移动状态**，并没有真实的行走逐帧动画，移动时仍播放 Idle 占位动画
+
+### Step 6.1（平台窗口定位解耦 + 生命周期）
+
+- [x] 新增定位抽象 `positioning/`：`PositioningService` 协议 + `supports_physical_positioning()`
+- [x] 移动计算与平台定位彻底解耦：`MovementController` 不再调用 `window.move()`，也不再判断平台
+- [x] `main.py` 不再堆积 `if wayland/X11`：平台细节封装在 `QtPositioningService`
+- [x] 原生 Wayland：`supports_physical_positioning()==False`，逻辑位置更新但 `applied=False`，**不虚报移动成功**，打印明确警告
+- [x] X11/XWayland：`applied=True`，真实窗口移动（回归验证通过）
+- [x] 退出生命周期：`run.sh` 直接 `exec` 环境 python（不再经 `conda run` 转发）；程序安装 `SIGHUP/SIGINT/SIGTERM` 处理器优雅退出，关闭终端不再留下孤儿窗口/进程
 
 尚未实现（后续 Step）：点击/拖动、状态机、桌面物件、自主行为。
 
@@ -330,6 +342,45 @@ QT_QPA_PLATFORM=xcb ./run.sh --movement-test --run-seconds 4
 
 `--pause-at` / `--resume-at` 现在同时暂停/恢复移动与动画；暂停期间世界坐标冻结，
 恢复后从暂停点继续，不会跳变。
+
+---
+
+## 平台定位与生命周期（Step 6.1）
+
+### 定位抽象
+
+移动计算与“能不能真的移动窗口”彻底分离：
+
+```text
+MovementModel        （只算“应该去哪”）
+      ↓
+MovementController   （QTimer/delta_time，只发 WorldPosition，不碰 window、不判断平台）
+      ↓
+WorldPosition
+      ↓
+PositioningService   （“能不能真的移动到那”）
+      ├── QtPositioningService  -> xcb：window.move；wayland：拒绝并返回 False
+      └── LogicalOnlyPositioning -> 仅供测试/无法物理定位的平台
+```
+
+`PositioningService` 提供：
+
+```text
+platform_name()
+supports_physical_positioning()
+set_position(x, y) -> bool   # False 表示平台未真正移动，调用方不得当作成功
+```
+
+- 判定规则：**原生 `wayland` 不支持物理定位**，`xcb`/`offscreen` 等支持。
+- 原生 Wayland 下 `main.py` 会打印：逻辑位置在更新，但窗口不会真正移动，如需真实移动请用 XWayland/X11。
+- 包名用 `positioning/` 而非 `platform/`，避免遮蔽 Python 标准库 `platform`（`src` 在 `sys.path` 首位）。
+
+### 退出生命周期
+
+- `run.sh` 解析出 conda 环境后**直接 `exec` 环境里的 python**，不再用 `conda run` 包裹，
+  使桌宠进程处于前台进程组，关闭终端（SIGHUP）即可被送达。
+- `main.py` 安装 `SIGHUP / SIGINT / SIGTERM` 处理器：收到信号后 `app.quit()`，Qt 事件循环退出、窗口销毁。
+- 验证：正常退出、`--run-seconds` 自动退出、SIGHUP/SIGTERM/SIGINT 均**不残留 `main.py` 进程**。
 
 ---
 

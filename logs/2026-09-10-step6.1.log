@@ -1,0 +1,90 @@
+# Desktop Pet 开发日志 — Step 6.1：平台窗口定位解耦 + 生命周期
+
+日期：2026-09-10
+项目：~/opencode/projects/desktop-pet/
+执行者：opencode (deepseek-flash)
+授权：用户要求 Step 6.1。
+
+标签：[code] [test] [run] [refactor]
+
+---
+
+## 0. 依赖
+
+**No new dependency installed.**
+未改 conda 环境，未改 requirements.txt，未改系统。
+
+## 1. 新增文件 [code]
+
+- `src/positioning/__init__.py`
+- `src/positioning/service.py` — `supports_physical_positioning()`、`PositioningService` 协议、`LogicalOnlyPositioning`
+- `src/positioning/qt.py` — `QtPositioningService`（仅依赖鸭子类型的 `window.move`）
+- `tests/test_positioning.py` — 12 个测试
+- `tests/test_lifecycle.py` — 2 个测试
+- `logs/2026-09-10-step6.1.log`（本文件）
+
+> 命名说明：未使用用户建议的 `src/platform/`，因为 `src` 位于 `sys.path` 首位，
+> 包名 `platform` 会遮蔽 Python 标准库 `platform`，可能影响 numpy 等。改用 `src/positioning/`。
+
+## 2. 修改文件 [code]
+
+- `src/main.py`
+  - 新增 `install_signal_handlers(app, logger)`（SIGHUP/SIGINT/SIGTERM → app.quit）
+  - 用 `QtPositioningService` 取代内联的平台判断
+  - `on_position` 改为调用 `positioning.set_position(...)`，日志记录 `applied=<bool>`
+  - 原生 Wayland 且请求移动时打印明确警告（逻辑与物理区分）
+  - `aboutToQuit` 记录退出
+- `run.sh` — 解析 conda 前缀后直接 `exec "$PREFIX/bin/python"`（不再 `conda run` 转发），保留 `LD_LIBRARY_PATH`
+- `README.md` — Step 6.1 文档、定位抽象、生命周期、结构
+
+## 3. MovementModel / MovementController
+
+- `MovementModel` 未改动（仍是纯逻辑，无 Qt/无平台依赖）。
+- `MovementController` 本就只发 WorldPosition；本次确认它**不再被要求接触 window.move、不判断平台**（调用在 main 层经 PositioningService）。
+
+## 4. 删除文件
+
+None
+
+## 5. 测试 [test]
+
+- 命令：`conda run -n desktop-pet python -m unittest discover -s tests`
+- 结果：**52/52 通过**（Step4/5/6 的 37 + 新增 15）
+- 覆盖：
+  - 平台能力：xcb=True / wayland=False / offscreen=True / 大小写与空串
+  - QtPositioningService：xcb 应用坐标、wayland 拒绝且不调用 move、满足协议
+  - LogicalOnlyPositioning：记录位置但永不声称成功
+  - 解耦：定位层不 import movement、movement 不 import positioning；各自可独立工作
+  - 生命周期：信号处理器安装、触发 quit、幂等
+
+## 6. 真实运行验证 [run]
+
+| 场景 | 命令 | 结果 |
+|---|---|---|
+| 正常启动/退出 | `./run.sh --run-seconds 3` | Wayland；`positioning: supports_physical_positioning=False`；正常退出 |
+| XWayland 移动 | `QT_QPA_PLATFORM=xcb ./run.sh --move right --speed 300 --start-x 200 --start-y 400 --run-seconds 3` | `applied=True`，真实移动 200→1113（≈304px/s） |
+| 原生 Wayland 移动 | `./run.sh --move right --run-seconds 3` | 警告 + `applied=False`；逻辑 259→565，窗口保持 (200,400)，不虚报 |
+| 生命周期 SIGHUP | 直接向 python 发 SIGHUP | `received SIGHUP; shutting down`，进程退出，无孤儿 |
+| 生命周期 SIGTERM | `kill -TERM` | 干净退出 |
+| 生命周期 SIGINT | `kill -INT` | 干净退出 |
+| 无孤儿 | `pgrep` | 无残留 `main.py` 进程 |
+
+## 7. 生成物
+
+- 无新素材；仅临时测试日志 `/tmp/opencode/*.log`（项目外，未纳入仓库）。
+
+## 8. 原始素材保护
+
+- `picture/original/` 三个文件 MD5 与权限（`r--r--r--`）均未变；未生成写回原始文件。
+
+## 9. 回滚方式
+
+- 删除 `src/positioning/`、`tests/test_positioning.py`、`tests/test_lifecycle.py`。
+- 还原 `src/main.py`、`run.sh`、`README.md`（或 `git revert`）。
+- 无环境/依赖回滚。
+
+## 10. 已知问题
+
+- 原生 Wayland 仍无法移动顶层窗口（合成器限制，属平台固有限制）。
+- 多显示器未实现（沿用 Step 6）。
+- WALK 仍无真实行走帧/朝向翻转。
